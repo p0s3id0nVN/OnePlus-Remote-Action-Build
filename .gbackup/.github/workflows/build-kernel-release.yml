@@ -1,0 +1,641 @@
+name: Build OnePlus Kernel
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      op_model:
+        description: 'Select the OnePlus kernels to build'
+        required: true
+        type: choice
+        options:
+          # OOS16
+          - OP15T_oos16
+          - OP15r_oos16
+          - OP15_oos16
+          - OP13_oos16
+          - OP13r_oos16
+          - OP13S_oos16
+          - OP13T_oos16
+          - OP12_oos16
+          - OP12r_oos16
+          - OP11_oos16
+          - OP11r_oos16
+          - OP10pro_oos16
+          - OP-TURBO-6V_oos16
+          - OP-TURBO-6_oos16
+          - OP-ACE-6T_oos16
+          - OP-ACE-6_oos16
+          - OP-ACE-5-PRO_oos16
+          - OP-ACE-5_oos16
+          - OP-ACE-5-ULTRA_oos16
+          - OP-ACE-5-RACE_oos16
+          - OP-ACE-3-PRO_oos16
+          - OP-ACE-3V_oos16
+          - OP-ACE-3_oos16
+          - OP-ACE-2-PRO_oos16
+          - OP-ACE-2_oos16
+          - OP-NORD-5_oos16
+          - OP-NORD-CE-5_oos16
+          - OP-NORD-4_oos16
+          - OP-NORD-4-CE_oos16
+          - OP-NORD-CE4-LITE_oos16
+          - OP-PAD-3-SM8750_oos16
+          - OP-PAD-3-MT6897_oos16
+          - OP-PAD-2-PRO_oos16
+          - OP-PAD-2-MT6991_oos16
+          - OP-PAD-2-SM8650_oos16
+          - OP-PAD-PRO_oos16
+          - OP-PAD-MT6983_oos16
+          - OP-OPEN_oos16
+          - OP-PAD-GO-2_oos16
+          # OOS15
+          - OP13-CPH_oos15
+          - OP13-PJZ_oos15
+          - OP13r_oos15
+          - OP13S_oos15
+          - OP13T_oos15
+          - OP12_oos15
+          - OP12r_oos15
+          - OP11_oos15
+          - OP11r_oos15
+          - OP10t_oos15
+          - OP10pro_oos15
+          - OP10r_oos15
+          - OP-ACE-5-PRO_oos15
+          - OP-ACE-5_oos15
+          - OP-ACE-5-ULTRA_oos15
+          - OP-ACE-5-RACE_oos15
+          - OP-ACE-3-PRO_oos15
+          - OP-ACE-3V_oos15
+          - OP-ACE-3_oos15
+          - OP-ACE-2-PRO_oos15
+          - OP-ACE-2V_oos15
+          - OP-ACE-2_oos15
+          - OP-ACE-RACE_oos15
+          - OP-ACE_oos15
+          - OP-NORD-5_oos15
+          - OP-NORD-CE-5_oos15
+          - OP-NORD-4_oos15
+          - OP-NORD-4-CE_oos15
+          - OP-NORD-CE4-LITE_oos15
+          - OP-NORD-3_oos15
+          - OP-PAD-3-SM8750_oos15
+          - OP-PAD-3-MT6897_oos15
+          - OP-PAD-2-PRO_oos15
+          - OP-PAD-2-SM8650_oos15
+          - OP-PAD-PRO_oos15
+          - OP-PAD-MT6983_oos15
+          - OP-PAD-LITE_oos15
+          - OP-OPEN_oos15
+          # OOS14
+          - OP12_oos14
+          - OP11_oos14
+          - OP11r_oos14
+          - OP10pro_oos14
+          - OP10r_oos14
+          - OP-ACE-3-PRO_oos14
+          - OP-ACE-RACE_oos14
+          - OP-ACE_oos14
+          - OP-PAD-PRO_oos14
+        default: OP11_oos16
+      ksu_options:
+        description: 'Enter KernelSU build json'
+        required: true
+        type: string
+        default: '[{"type":"ksun","hash":"dev"}]'
+      optimize_level:
+        description: "Compiler optimization level"
+        required: true
+        type: choice
+        options: [O2, O3]
+        default: O2
+      clean_build:
+        description: 'Clean build (no ccache)'
+        type: boolean
+        default: false
+      susfs_branch_or_commit:
+        description: 'Enter SusFS Branch or commit hash for selected device kernel'
+        type: string
+        default: ''
+
+jobs:
+  set-op-model:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      device_count: ${{ steps.set-matrix.outputs.count }}
+      ksu_resolved_hash:    ${{ steps.set-matrix.outputs.ksu_resolved_hash }}
+      ksu_options_normalized: ${{ steps.set-matrix.outputs.ksu_options_normalized }}
+      susfs_resolved_hash:  ${{ steps.set-matrix.outputs.susfs_resolved_hash }}
+    steps:
+      - name: 📥 Checkout Code (to access configs/)
+        uses: actions/checkout@v6
+        with:
+          ref: devices
+          sparse-checkout: |
+            configs/
+          sparse-checkout-cone-mode: false
+
+      - name: 🔍 Generate build matrix
+        id: set-matrix
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HTTP_TIMEOUT: 600
+        run: |
+          set -euo pipefail
+          echo "::group::Matrix generation"
+          
+          input="${{ github.event.inputs.op_model }}"
+          ksu_options_raw='${{ github.event.inputs.ksu_options }}'
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1); then
+            echo "::error::ksu_options validation failed: $ksu_options_normalized"
+            exit 1
+          fi
+          
+          echo "[" > matrix.json
+          mapfile -t all_json_files < <(find configs/ -name "*.json" -print0 | xargs -0 -n1)
+          for i in "${!all_json_files[@]}"; do
+            file="${all_json_files[$i]}"
+            if [ -f "$file" ]; then
+              jq -r '.' "$file" >> matrix.json
+              if [ $((i+1)) -lt ${#all_json_files[@]} ]; then
+                echo "," >> matrix.json
+              fi
+            fi
+          done
+          echo "]" >> matrix.json
+          
+          model_part="${input%_*}"
+          os_part="${input##*_}"
+          
+          os_version=$(echo "$os_part" | tr '[:lower:]' '[:upper:]')
+          
+          echo "🔍 Parsing input: $input"
+          echo "   Model part: $model_part"
+          echo "   OS part: $os_version"
+          
+          jq_filter="map(select(.model == \"$model_part\" and .os_version == \"$os_version\"))"
+          
+          filtered=$(jq -c "$jq_filter" matrix.json)
+          count=$(jq 'length' <<<"$filtered")
+          
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No config files found for model '$model_part' with OS version '$os_version'!"
+            echo ""
+            echo "Available configurations:"
+            jq -r '.[] | "  - \(.model)_\(.os_version | ascii_downcase) (\(.os_version), \(.android_version)-\(.kernel_version))"' matrix.json
+            exit 1
+          fi
+          
+          echo "$filtered" | jq '.' > matrix.json
+          
+          merged_matrix=$(jq -n --argjson devices "$filtered" --argjson ksu_list "$ksu_options_normalized" '[ $devices[] as $dev | $ksu_list[] as $ksu | ($dev + {ksu_type: $ksu.type, ksu_hash: $ksu.hash}) ]')
+          
+          final_count=$(echo "$merged_matrix" | jq -s length)
+          
+          echo "✅ Found $final_count device(s) to build"
+          echo ""
+          echo "Selected devices:"
+          jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash))"' <<<"$merged_matrix"
+          
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "ksu_options_normalized=$ksu_options_normalized" >> "$GITHUB_OUTPUT"
+          
+          ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
+          ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
+          
+          if [ "$ksu_type" == "KSUN" ]; then
+            KSU_REPO_OWNER="KernelSU-Next"
+            KSU_REPO_NAME="KernelSU-Next"
+          else
+            KSU_REPO_OWNER="tiann"
+            KSU_REPO_NAME="KernelSU"
+          fi
+          
+          HEAD_REF="refs/heads/${ksu_ref}"
+          TAG_REF="refs/tags/${ksu_ref}"
+          
+          QUERY='query($owner: String!, $name: String!, $headRef: String!, $tagRef: String!, $objRef: String!) {
+            repository(owner: $owner, name: $name) {
+              hb: ref(qualifiedName: $headRef) { t: target { ... on Commit { o: oid } } }
+              ht: ref(qualifiedName: $tagRef) { t: target { ... on Commit { o: oid } } }
+              ho: object(expression: $objRef) { ... on Commit { o: oid } }
+            }
+          }'
+          
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          RETRY_DELAY=5
+          
+          echo "Resolving $ksu_type hash ($ksu_ref)..."
+          
+          until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
+            RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF" -f tagRef="$TAG_REF" -f objRef="$ksu_ref" 2>/dev/null)
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -eq 0 ] && [ -n "$RESULT" ]; then
+              echo "  ✅ API Success"
+              break
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "::warning::API failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+          done
+          
+          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "::error::GitHub API unreachable. Cannot validate $ksu_ref"
+            exit 1
+          fi
+          
+          resolved_sha=$(echo "$RESULT" | jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")')
+          
+          if [ "$resolved_sha" == "unknown" ]; then
+            echo "::error::Ref/Hash '$ksu_ref' does not exist in $KSU_REPO_OWNER/$KSU_REPO_NAME"
+            exit 1
+          fi
+          
+          echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha"
+          echo "ksu_resolved_hash=$resolved_sha" >> "$GITHUB_OUTPUT"
+          
+          # Inject ksu_resolved_hash into matrix
+          merged_matrix=$(echo "$merged_matrix" | jq --arg resolved_sha "$resolved_sha" 'map(.ksu_resolved_hash = $resolved_sha)')
+          
+          # SUSFS hash fetch
+          GITLAB_PROJECT_PATH="simonpunk/susfs4ksu"
+          android_ver=$(echo "$merged_matrix" | jq -r '.[0].android_version')
+          kernel_ver=$(echo "$merged_matrix"  | jq -r '.[0].kernel_version')
+          susfs_key="${android_ver}-${kernel_ver}"
+          
+          declare -A default_branches=(
+            ["android12-5.10"]="gki-android12-5.10"
+            ["android13-5.15"]="gki-android13-5.15"
+            ["android14-6.1"]="gki-android14-6.1"
+            ["android15-6.6"]="gki-android15-6.6"
+            ["android16-6.12"]="gki-android16-6.12"
+          )
+          
+          user_val="${{ inputs.susfs_branch_or_commit }}"
+          default_val="${default_branches[$susfs_key]:-gki-android15-6.6}"
+          susfs_ref="${user_val:-$default_val}"
+          
+          susfs_enabled=$(echo "$merged_matrix" | jq -r '.[0].susfs')
+          
+          if [ "$susfs_enabled" = "true" ]; then
+            echo "🔍 Resolving SUSFS hash for: $susfs_key (ref: $susfs_ref)"
+            
+            # Single GraphQL query: fetch commit SHA
+            GL_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${susfs_ref}\") { sha } } } }"
+
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            RETRY_DELAY=5
+            susfs_resolved=""
+            
+            until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
+              RESPONSE=$(curl -s --fail -G "https://gitlab.com/api/graphql" --data-urlencode "query=$GL_QUERY")
+              EXIT_CODE=$?
+              
+              if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
+                susfs_resolved=$(echo "$RESPONSE" | jq -r '.data.project.repository.ch.sha // empty')
+                if [ -n "$susfs_resolved" ] && [ "$susfs_resolved" != "null" ]; then
+                  echo "  ✅ Resolved: $susfs_key → $susfs_resolved"
+                  break
+                fi
+              fi
+              
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "::warning::GitLab GraphQL API failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying..."
+              sleep $RETRY_DELAY
+            done
+            
+            # Final Validation — SUSFS hash
+            if [ -z "$susfs_resolved" ] || [ "$susfs_resolved" = "null" ]; then
+              echo "::error::Could not resolve SUSFS ref '$susfs_ref' for $susfs_key on GitLab."
+              exit 1
+            fi
+          else
+            susfs_resolved="unknown"
+            echo "ℹ️  SUSFS disabled for this device, skipping resolution"
+          fi
+          
+          echo "susfs_resolved_hash=$susfs_resolved" >> "$GITHUB_OUTPUT"
+          
+          # Inject susfs_resolved_hash into matrix
+          merged_matrix=$(echo "$merged_matrix" | jq \
+            --arg susfs_resolved "$susfs_resolved" \
+            'map(.susfs_resolved_hash = $susfs_resolved)')
+          
+          # Recalculate wrapped with updated matrix and write output
+          wrapped=$(jq -n --argjson items "$merged_matrix" '{ include: $items }')
+          echo "matrix=$(jq -c . <<< "$wrapped")" >> "$GITHUB_OUTPUT"
+          
+          echo "::endgroup::"
+
+      - name: Upload build matrix
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-matrix
+          path: matrix.json
+          archive: false
+          retention-days: 7
+
+      - name: 📊 Build plan summary
+        run: |
+          ksu_type="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].type }}"
+          ksu_ref="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].hash }}"
+          ksu_resolved="${{ steps.set-matrix.outputs.ksu_resolved_hash }}"
+          
+          ksu_display=""
+          if [ "$ksu_type" = "KSUN" ] || [ "$ksu_type" = "KSU" ]; then
+            if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
+              ksu_display+="📌 \`$ksu_type\`, \`$ksu_ref\`"
+            else
+              ksu_display+="🔀 \`$ksu_type\`, \`$ksu_ref\` (\`$ksu_resolved\`)"
+            fi
+          fi
+          
+          {
+            cat << 'EOF'
+          ## 🎯 Build Plan
+          
+          **Target:** ${{ inputs.op_model }}  
+          **Devices:** ${{ steps.set-matrix.outputs.count }}  
+          
+          **Configuration:**
+          EOF
+          
+            echo "- KSU Config: $ksu_display"
+          
+            cat << 'EOF'
+          - Optimization: ${{ inputs.optimize_level }}
+          - Clean Build/No Ccache: ${{ inputs.clean_build && '✅ Yes' || '❌ No' }}
+          
+          **SUSFS Configuration:**
+          EOF
+          } >> "$GITHUB_STEP_SUMMARY"
+          
+          susfs_input="${{ inputs.susfs_branch_or_commit }}"
+          susfs_resolved="${{ steps.set-matrix.outputs.susfs_resolved_hash }}"
+          matrix_json='${{ steps.set-matrix.outputs.matrix }}'
+          android_ver=$(echo "$matrix_json" | jq -r '.include[0].android_version')
+          kernel_ver=$(echo "$matrix_json"  | jq -r '.include[0].kernel_version')
+          key="${android_ver}-${kernel_ver}"
+          
+          if [ -z "$susfs_input" ]; then
+            echo "- $key: 🔄 auto (\`$susfs_resolved\`)" >> $GITHUB_STEP_SUMMARY
+          elif [[ "$susfs_input" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "- $key: 📌 \`$susfs_input\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- $key: 🔀 \`$susfs_input\` (\`$susfs_resolved\`)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start." >> $GITHUB_STEP_SUMMARY
+          
+          # Add OOS restriction note for android-kernel filters
+          if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  build:
+    name: build (${{ matrix.model }}, ${{ matrix.soc }}, ${{ matrix.branch }}, ${{ matrix.manifest }}, ${{ matrix.android_version }}, ${{ matrix.kernel_version }}, ${{ matrix.os_version }}, ${{ matrix.ksu_type }})
+    needs: set-op-model
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
+    outputs:
+      ksun_ver: ${{ steps.build-stat.outputs.ksu_version }}
+      ksu_ver: ${{ steps.build-stat.outputs.ksu_version }}
+    steps:
+      - name: 🧹 Emergency Disk Cleanup
+        if: ${{ matrix.disk_cleanup }}
+        run: |
+          echo "::group::Disk Usage Before Cleanup"
+          df -h
+          echo "::endgroup::"
+          
+          echo "::group::Removing Unnecessary Software"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          if command -v docker >/dev/null 2>&1; then
+            docker rmi $(docker images -q) 2>/dev/null || true
+          fi
+          echo "::endgroup::"
+          
+          echo "::group::Disk Usage After Cleanup"
+          df -h
+          AVAIL=$(df -h / | awk 'NR==2 {print $4}')
+          echo "✅ Available space: $AVAIL"
+          echo "::endgroup::"
+
+      - name: Download Apache Arrow's util_free_space.sh
+        if: ${{ matrix.disk_cleanup }}
+        run: |
+          curl -L -o util_free_space.sh https://raw.githubusercontent.com/apache/arrow/main/ci/scripts/util_free_space.sh
+          chmod +x util_free_space.sh
+          ./util_free_space.sh
+
+      - name: Install Minimal Dependencies
+        run: |
+          set -euo pipefail
+          echo "::group::Install dependencies"
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential clang lld flex bison \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils
+          sudo apt-get clean
+          echo "✅ Dependencies installed"
+          echo "::endgroup::"
+
+      - name: 📦 Disk usage (pre-build)
+        run: |
+          echo "::group::Disk usage pre-build"
+          df -h /
+          du -sh "$GITHUB_WORKSPACE" 2>/dev/null || true
+          sudo rm -rf /tmp/* || true
+          echo "::endgroup::"
+
+      - name: ♻️ Configure ccache (bounded)
+        if: ${{ inputs.clean_build != true }}
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            echo "::group::ccache configuration"
+            ccache -o max_size=1.0G
+            ccache -o compression=true
+            ccache -o compression_level=3
+            ccache -s
+            echo "::endgroup::"
+          fi
+
+      - name: 🧹 Prepare op_config_json (without KSU fields)
+        id: prepare_config
+        shell: bash
+        run: |
+          echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash, .ksu_resolved_hash, .susfs_resolved_hash)')" >> "$GITHUB_OUTPUT"
+
+      - name: 📥 Checkout Code (to access manifests/)
+        uses: actions/checkout@v6
+        with:
+          repository: WildKernels/OnePlus_KernelSU_SUSFS
+          ref: main
+          sparse-checkout: |
+            manifests/
+          sparse-checkout-cone-mode: false
+
+      - name: 🔨 Build Kernel
+        id: build
+        uses: WildKernels/OnePlus_KernelSU_SUSFS/.github/actions@main
+        with:
+          op_config_json: ${{ steps.prepare_config.outputs.config_json }}
+          ksu_type: ${{ matrix.ksu_type }}
+          ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
+          susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
+          optimize_level: ${{ inputs.optimize_level }}
+          clean: ${{ inputs.clean_build }}
+
+      - name: 📊 Build statistics
+        id: build-stat
+        if: always()
+        run: |
+          echo "::group::Build Statistics"
+          
+          echo "Device: ${{ matrix.model }}"
+          echo "OS Version: ${{ matrix.os_version }}"
+          echo "Kernel: ${{ matrix.android_version }}-${{ matrix.kernel_version }}"
+          if [ "${{ matrix.susfs }}" = true ]; then
+            echo "SUSFS Hash: ${{ matrix.susfs_resolved_hash }}"
+          fi
+          echo "Status: ${{ job.status }}"
+          
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo ""
+            echo "✅ Build completed successfully"
+            echo ""
+            echo "Outputs:"
+            echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
+            if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
+              echo "  - KSU Next: v${{ steps.build.outputs.ksu_version }}"
+              echo "ksun_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
+              echo "ksu_ver=" >> "$GITHUB_OUTPUT"
+            else
+              echo "  - KSU: v${{ steps.build.outputs.ksu_version }}"
+              echo "ksun_ver=" >> "$GITHUB_OUTPUT"
+              echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "${{ matrix.susfs }}" = true ]; then
+              echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
+            fi
+            echo "  - Build time: ${{ steps.build.outputs.build_time }}s"
+            
+            if [ "${{ inputs.clean_build }}" != "true" ]; then
+              echo "  - ccache hit rate: ${{ steps.build.outputs.ccache_hit_rate }}"
+              echo "  - ccache direct rate: ${{ steps.build.outputs.ccache_direct_rate }}"
+            else
+              echo "  - ccache: disabled (clean build)"
+            fi
+            
+            if [ -n "${{ steps.build.outputs.warnings }}" ]; then
+              echo "  - Warnings: ${{ steps.build.outputs.warnings }}"
+            fi
+          else
+            echo "❌ Build failed"
+          fi
+          
+          echo "::endgroup::"
+
+      - name: 📝 Job summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          
+          ### ${{ matrix.model }} (${{ matrix.os_version }}) - ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
+          
+          **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}
+          EOF
+          
+          if [ "${{ matrix.susfs }}" = true ]; then
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          **SUSFS Hash:** \`${{ matrix.susfs_resolved_hash }}\`
+          EOF
+          fi
+          
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          | Metric | Value |
+          |--------|-------|
+          | **Kernel** | ${{ steps.build.outputs.kernel_version }} |
+          EOF
+            if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **KSU Next** | v${{ steps.build.outputs.ksu_version }} |
+          EOF
+            else
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **KSU** | v${{ steps.build.outputs.ksu_version }} |
+          EOF
+            fi
+            
+            if [ "${{ matrix.susfs }}" = true ]; then
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **SUSFS** | ${{ steps.build.outputs.susfs_version }} |
+          EOF
+            fi
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **Build Time** | ${{ steps.build.outputs.build_time }}s |
+          EOF
+            
+            if [ "${{ inputs.clean_build }}" != "true" ]; then
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **ccache Hit Rate** | ${{ steps.build.outputs.ccache_hit_rate }} |
+          | **ccache Direct Rate** | ${{ steps.build.outputs.ccache_direct_rate }} |
+          EOF
+            fi
+            
+            if [ -n "${{ steps.build.outputs.warnings }}" ]; then
+              echo "| **Warnings** | ${{ steps.build.outputs.warnings }} |" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          
+          **SHA256:** \`${{ steps.build.outputs.image_sha256 }}\`
+          EOF
+          fi
+
+      - name: 🧹 Final cleanup and space report
+        if: always()
+        run: |
+          echo "::group::Cleanup"
+          
+          # Remove build artifacts but PRESERVE ccache
+          sudo rm -rf "$GITHUB_WORKSPACE/out" || true
+          sudo rm -rf "$GITHUB_WORKSPACE/build" || true
+          sudo rm -rf "$GITHUB_WORKSPACE/kernel/out" || true
+          sudo rm -rf "$GITHUB_WORKSPACE/.repo" || true
+          sudo rm -rf /tmp/* || true
+          
+          # Show ccache stats (don't clear it!)
+          if command -v ccache >/dev/null 2>&1; then
+            echo ""
+            echo "📊 ccache statistics after build:"
+            ccache -s
+            echo ""
+            echo "💾 ccache preserved for next build"
+          fi
+          
+          echo ""
+          echo "💽 Final disk usage:"
+          df -h /
+          
+          echo "::endgroup::"
